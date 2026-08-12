@@ -1,0 +1,14 @@
+# Backup files
+*.bak-*
+*.bak
+
+# Test outputs
+test_output*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
