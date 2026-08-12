@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>质谱报告书签添加器</title>
+    <script src="lib/pdf-lib.min.js"></script>
+    <script src="lib/pdf.min.js"></script>
+    <script>
+        // 确保 PDFDocument 全局可用
+        const { PDFDocument, PDFName, PDFArray, PDFNumber, PDFHexString } = PDFLib;
+
+        // 设置 pdf.js worker（本地路径）
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+
+        // UTF-16BE 编码函数
+        function stringToUtf16BeHex(str) {
+            const codePoints = [];
+            codePoints.push(0xFEFF); // UTF-16 BOM
+            for (let i = 0; i < str.length; i++) {
+                codePoints.push(str.charCodeAt(i));
+            }
+
+            const bytes = [];
+            for (const cp of codePoints) {
+                bytes.push((cp >> 8) & 0xFF);
+                bytes.push(cp & 0xFF);
+            }
+
+            return bytes.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+        }
+
+        // 从已打开的 pdf.js 文档中提取某页文本（用完立即释放，避免内存累积）
+        async function extractPageText(pdfJsDoc, pageNum) {
+            let page = null;
+            try {
+                page = await pdfJsDoc.getPage(pageNum);
+                const textContent = await page.getTextContent();
+                const text = textContent.items.map(item => item.str).join(' ');
+                return text;
+            } catch (error) {
+                console.error(`提取第${pageNum}页文本失败:`, error);
+                return '';
+            } finally {
+                if (page && typeof page.cleanup === 'function') {
+                    try { page.cleanup(); } catch (e) {}
+                }
+            }
+        }
+
+        // AB 质谱仪版本 - 提取 Sample Name
+        function extractSampleNameAB(text) {
+            // 匹配 "Sample Name" 后面的内容
+            const match = text.match(/Sample\s*Name\s*([^\n\r\f\x0b]+?)(?=\s+(?:Sample\s*Type|Injection|Acquisition|Project|Instrument|Data\s*File|Result|RT\s*\(|$))/i);
+            if (match) {
+                return match[1].trim();
+            }
+
+            const match2 = text.match(/Sample\s*Name\s*([A-Za-z0-9\-_\.\(\)\[\]\s]+)/i);
+            if (match2) {
+                const name = match2[1].trim();
+                if (name.length > 0 && name.length < 100) {
+                    return name;
+                }
+            }
+
+            const match3 = text.match(/Sample\s+([A-Z][0-9]+)/i);
+            if (match3) {
+                return match3[1].trim();
+            }
+
+            return null;
+        }
+
+        // GC-MS 版本 - 提取样品名称
+        function extractSampleNameGCMS(text) {
+            // 1. 优先匹配 "样品名称"（中文）
+            const matchCN = text.match(/样品名称\s*[:：]?\s*([^\n\r\f\x0b]+?)(?=\s+(?:稀释|样品类型|采集|项目|仪器|数据文件|结果|RT\s*\(|$))/i);
+            if (matchCN) {
+                const name = matchCN[1].trim();
+                if (name.length > 0 && name.length < 100) {
+                    return name;
+                }
+            }
+
+            // 2. 匹配 "Sample Name"（英文）
+            const match = text.match(/Sample\s*Name\s*[:：]?\s*([^\n\r\f\x0b]+?)(?=\s+(?:Dilution|Sample\s*Type|Injection|Acquisition|Project|Instrument|Data\s*File|Result|RT\s*\(|稀释|样品类型|采集|项目|仪器|数据文件|结果|$))/i);
+            if (match) {
+                const name = match[1].trim();
+                if (name.length > 0 && name.length < 100) {
+                    return name;
+                }
+            }
+
+            // 3. 匹配 "数据文件" 中的样品名
+            const matchDataFile = text.match(/数据文件\s*[:：]?\s*([A-Za-z0-9\-_\.]+)/i);
+            if (matchDataFile) {
+                const dataFile = matchDataFile[1].trim();
+                const name = dataFile.replace(/\.D$/i, '');
+                if (name.length > 0) {
+                    return name;
+                }
+            }
+
+            // 4. 匹配 "Data File" 中的样品名
+            const matchDataFileEN = text.match(/Data\s*File\s*[:：]?\s*([A-Za-z0-9\-_\.]+)/i);
+            if (matchDataFileEN) {
+                const dataFile = matchDataFileEN[1].trim();
+                const name = dataFile.replace(/\.D$/i, '');
+                if (name.length > 0) {
+                    return name;
+                }
+            }
+
+            // 5. 匹配 "Sample" 后面的标识
+            const match3 = text.match(/Sample\s+([A-Z][A-Za-z0-9\-_]*)/i);
+            if (match3) {
+                return match3[1].trim();
+            }
+
+            return null;
+        }
+
+        // 根据仪器类型选择提取函数
+        function extractSampleName(text, instrumentType) {
+            if (instrumentType === 'gcms') {
+                return extractSampleNameGCMS(text);
+            } else {
+                return extractSampleNameAB(text);
+            }
+        }
+    </script>
+    <script src="lib/download.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .instrument-selector {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f0f4ff;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .instrument-selector label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        .instrument-selector select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+        }
+
+        .instrument-selector select:focus {
+            border-color: #667eea;
+            outline: none;
+        }
+
+        .upload-area {
+            border: 3px dashed #ddd;
+            border-radius: 15px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+        }
+
+        .upload-area:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #667eea;
+            background: #e8eeff;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+
+        .upload-text {
+            color: #555;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .upload-hint {
+            color: #999;
+            font-size: 12px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .file-info {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f4ff;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .file-info.show {
+            display: block;
+        }
+
+        .file-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 12px;
+        }
+
+        .progress-container {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .progress-container.show {
+            display: block;
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .btn {
+            display: none;
+            width: 100%;
+            padding: 15px;
+            margin-top: 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn.show {
+            display: block;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #666;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .success-message {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #d4edda;
+            border-radius: 10px;
+            border-left: 4px solid #28a745;
+            color: #155724;
+        }
+
+        .success-message.show {
+            display: block;
+        }
+
+        .error-message {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8d7da;
+            border-radius: 10px;
+            border-left: 4px solid #dc3545;
+            color: #721c24;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .bookmark-preview {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff3cd;
+            border-radius: 10px;
+            border-left: 4px solid #ffc107;
+        }
+
+        .bookmark-preview.show {
+            display: block;
+        }
+
+        .bookmark-preview h3 {
+            font-size: 14px;
+            color: #856404;
+            margin-bottom: 10px;
+        }
+
+        .bookmark-list {
+            max-height: 250px;
+            overflow-y: auto;
+            font-size: 12px;
+            color: #856404;
+        }
+
+        .bookmark-header {
+            display: grid;
+            grid-template-columns: 40px 1fr 1fr;
+            gap: 8px;
+            padding: 8px 0;
+            font-weight: bold;
+            border-bottom: 2px solid #e0d6b8;
+            color: #856404;
+            font-size: 12px;
+        }
+
+        .bookmark-item {
+            display: grid;
+            grid-template-columns: 40px 1fr 1fr;
+            gap: 8px;
+            padding: 5px 0;
+            border-bottom: 1px dashed #e0d6b8;
+            align-items: center;
+        }
+
+        .bookmark-item:last-child {
+            border-bottom: none;
+        }
+
+        .bookmark-page-num {
+            color: #999;
+            font-size: 11px;
+            text-align: center;
+        }
+
+        .bookmark-input {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            color: #333;
+            background: white;
+            width: 100%;
+        }
+
+        .bookmark-input:focus {
+            border-color: #667eea;
+            outline: none;
+        }
+
+        .bookmark-input:read-only {
+            background: #f5f5f5;
+            color: #666;
+        }
+
+
+
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: #999;
+            font-size: 12px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📑 质谱报告书签添加器</h1>
+        <p class="subtitle">支持 AB 质谱仪和 GC-MS 报告，自动提取样品名称</p>
+
+        <div class="instrument-selector">
+            <label for="instrumentType">选择仪器类型：</label>
+            <select id="instrumentType">
+                <option value="ab">AB 质谱仪</option>
+                <option value="gcms" selected>GC-MS (Agilent)</option>
+            </select>
+        </div>
+
+
+
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📄</div>
+            <div class="upload-text">点击或拖拽上传 PDF 文件</div>
+            <div class="upload-hint">支持 .pdf 格式，文件在本地处理，不会上传到服务器</div>
+        </div>
+
+        <input type="file" id="fileInput" accept=".pdf">
+
+        <div class="file-info" id="fileInfo">
+            <div class="file-name" id="fileName"></div>
+            <div class="file-size" id="fileSize"></div>
+        </div>
+
+        <div class="bookmark-preview" id="bookmarkPreview">
+            <h3>📋 将添加的书签预览（可编辑）</h3>
+            <div class="bookmark-list" id="bookmarkList">
+                <div class="bookmark-header">
+                    <span>页码</span>
+                    <span>原始书签（英文）</span>
+                    <span>中文书签</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-text" id="progressText">准备中...</div>
+        </div>
+
+        <button class="btn btn-primary" id="processBtn">
+            添加书签并下载
+        </button>
+
+        <button class="btn btn-secondary" id="resetBtn">
+            重新选择文件
+        </button>
+
+        <div class="success-message" id="successMessage">
+            ✅ 书签添加成功！文件已开始下载。
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="footer">
+            🔒 纯本地处理，您的文件不会离开浏览器
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const instrumentType = document.getElementById('instrumentType');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const bookmarkPreview = document.getElementById('bookmarkPreview');
+        const bookmarkList = document.getElementById('bookmarkList');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const processBtn = document.getElementById('processBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const successMessage = document.getElementById('successMessage');
+        const errorMessage = document.getElementById('errorMessage');
+        const translationArea = document.getElementById('translationArea');
+        const translationUpload = document.getElementById('translationUpload');
+        const translationInput = document.getElementById('translationInput');
+        const translationInfo = document.getElementById('translationInfo');
+
+        let selectedFile = null;
+        let pdfDoc = null;
+        let pageBookmarks = [];
+        let selectedInstrument = '';
+        let translationMap = {
+    'SST-1': '系统适用性-1',
+    'SST 1': '系统适用性-1',
+    'SST-2': '系统适用性-2',
+    'SST 2': '系统适用性-2',
+    'SST-3': '系统适用性-3',
+    'SST 3': '系统适用性-3',
+    'SST-4': '系统适用性-4',
+    'SST 4': '系统适用性-4',
+    'SST-5': '系统适用性-5',
+    'SST 5': '系统适用性-5',
+    'SST-6': '系统适用性-6',
+    'SST 6': '系统适用性-6',
+
+    // 专属性
+    'Specificity-Blank solution': '专属性-空白溶液',
+    'Specificity-Test Solution': '专属性-供试品溶液',
+    'Specificity-Reference solution': '专属性-对照品溶液',
+    'Specificity-Spiked solution': '专属性-100%加标溶液',
+    'Specificity- Spiked solution': '专属性-100%加标溶液',
+
+    // 空白、LOD、LOQ
+    'LOQ-1': 'LOQ-1',
+    'LOQ 1': 'LOQ-1',
+    'LOQ-2': 'LOQ-2',
+    'LOQ 2': 'LOQ-2',
+    'LOQ-3': 'LOQ-3',
+    'LOQ 3': 'LOQ-3',
+    'LOQ-4': 'LOQ-4',
+    'LOQ 4': 'LOQ-4',
+    'LOQ-5': 'LOQ-5',
+    'LOQ 5': 'LOQ-5',
+    'LOQ-6': 'LOQ-6',
+    'LOQ 6': 'LOQ-6',
+    'LOD-1': 'LOD-1',
+    'LOD 1': 'LOD-1',
+    'LOD-2': 'LOD-2',
+    'LOD 2': 'LOD-2',
+    'LOD-3': 'LOD-3',
+    'LOD 3': 'LOD-3',
+    'Blank-1': '空白溶剂-1',
+    'Blank 1': '空白溶剂-1',
+    'Blank-3': '空白溶剂-3',
+    'Blank 3': '空白溶剂-3',
+
+    // 稳定性
+    'Stability-Reference solution-1': '稳定性-对照品溶液-1',
+    'Stability-Reference solution 1': '稳定性-对照品溶液-1',
+    'Stability-Spiked solution-1': '稳定性-加标溶液-1',
+    'Stability-Spiked solution 1': '稳定性-加标溶液-1',
+    'Stability- Spiked solution-1': '稳定性-加标溶液-1',
+    'Stability- Spiked solution 1': '稳定性-加标溶液-1',
+    'Stability-Reference solution-2': '稳定性-对照品溶液-2',
+    'Stability-Reference solution 2': '稳定性-对照品溶液-2',
+    'Stability-Spiked solution-2': '稳定性-加标溶液-2',
+    'Stability-Spiked solution 2': '稳定性-加标溶液-2',
+    'Stability- Spiked solution-2': '稳定性-加标溶液-2',
+    'Stability- Spiked solution 2': '稳定性-加标溶液-2',
+    'Stability-Reference solution-3': '稳定性-对照品溶液-3',
+    'Stability-Reference solution 3': '稳定性-对照品溶液-3',
+    'Stability-Spiked solution-3': '稳定性-加标溶液-3',
+    'Stability-Spiked solution 3': '稳定性-加标溶液-3',
+    'Stability- Spiked solution-3': '稳定性-加标溶液-3',
+    'Stability- Spiked solution 3': '稳定性-加标溶液-3',
+    'Stability-Reference solution-4': '稳定性-对照品溶液-4',
+    'Stability-Reference solution 4': '稳定性-对照品溶液-4',
+    'Stability-Spiked solution-4': '稳定性-加标溶液-4',
+    'Stability-Spiked solution 4': '稳定性-加标溶液-4',
+    'Stability- Spiked solution-4': '稳定性-加标溶液-4',
+    'Stability- Spiked solution 4': '稳定性-加标溶液-4',
+
+    // 线性与范围
+    'Linear-C1': '线性与范围溶液-C1',
+    'Linear C1': '线性与范围溶液-C1',
+    'Linear- C1': '线性与范围溶液-C1',
+    'Linear -C1': '线性与范围溶液-C1',
+    'Linear-C2': '线性与范围溶液-C2',
+    'Linear C2': '线性与范围溶液-C2',
+    'Linear- C2': '线性与范围溶液-C2',
+    'Linear -C2': '线性与范围溶液-C2',
+    'Linear-C3': '线性与范围溶液-C3',
+    'Linear C3': '线性与范围溶液-C3',
+    'Linear- C3': '线性与范围溶液-C3',
+    'Linear -C3': '线性与范围溶液-C3',
+    'Linear-C4': '线性与范围溶液-C4',
+    'Linear C4': '线性与范围溶液-C4',
+    'Linear- C4': '线性与范围溶液-C4',
+    'Linear -C4': '线性与范围溶液-C4',
+    'Linear-C5': '线性与范围溶液-C5',
+    'Linear C5': '线性与范围溶液-C5',
+    'Linear- C5': '线性与范围溶液-C5',
+    'Linear -C5': '线性与范围溶液-C5',
+
+    // 中间精密度-线性
+    'Intermediate precision-Linear C1': '中间精密度-线性溶液-C1',
+    'Intermediate precision-Linear C2': '中间精密度-线性溶液-C2',
+    'Intermediate precision-Linear C3': '中间精密度-线性溶液-C3',
+    'Intermediate precision-Linear C4': '中间精密度-线性溶液-C4',
+    'Intermediate precision-Linear C5': '中间精密度-线性溶液-C5',
+
+    // 准确度
+    'Accuracy-Test solution-1': '准确度-供试品溶液-1',
+    'Accuracy-Test solution 1': '准确度-供试品溶液-1',
+    'Accuracy -Test solution-1': '准确度-供试品溶液-1',
+    'Accuracy -Test solution 1': '准确度-供试品溶液-1',
+    'Accuracy-Test solution-2': '准确度-供试品溶液-2',
+    'Accuracy-Test solution 2': '准确度-供试品溶液-2',
+    'Accuracy -Test solution-2': '准确度-供试品溶液-2',
+    'Accuracy -Test solution 2': '准确度-供试品溶液-2',
+    'Accuracy-Test solution-3': '准确度-供试品溶液-3',
+    'Accuracy-Test solution 3': '准确度-供试品溶液-3',
+    'Accuracy -Test solution-3': '准确度-供试品溶液-3',
+    'Accuracy -Test solution 3': '准确度-供试品溶液-3',
+    'Accuracy-LOQ Spiked solution-1': '准确度-LOQ加标溶液-1',
+    'Accuracy-LOQ Spiked solution 1': '准确度-LOQ加标溶液-1',
+    'Accuracy -LOQ Spiked solution-1': '准确度-LOQ加标溶液-1',
+    'Accuracy -LOQ Spiked solution 1': '准确度-LOQ加标溶液-1',
+    'Accuracy-LOQ Spiked solution-2': '准确度-LOQ加标溶液-2',
+    'Accuracy-LOQ Spiked solution 2': '准确度-LOQ加标溶液-2',
+    'Accuracy -LOQ Spiked solution-2': '准确度-LOQ加标溶液-2',
+    'Accuracy -LOQ Spiked solution 2': '准确度-LOQ加标溶液-2',
+    'Accuracy-LOQ Spiked solution-3': '准确度-LOQ加标溶液-3',
+    'Accuracy-LOQ Spiked solution 3': '准确度-LOQ加标溶液-3',
+    'Accuracy -LOQ Spiked solution-3': '准确度-LOQ加标溶液-3',
+    'Accuracy -LOQ Spiked solution 3': '准确度-LOQ加标溶液-3',
+    'Accuracy-150% Spiked solution-1': '准确度-150%加标溶液-1',
+    'Accuracy-150% Spiked solution 1': '准确度-150%加标溶液-1',
+    'Accuracy -150% Spiked solution-1': '准确度-150%加标溶液-1',
+    'Accuracy -150% Spiked solution 1': '准确度-150%加标溶液-1',
+    'Accuracy-150% Spiked solution-2': '准确度-150%加标溶液-2',
+    'Accuracy-150% Spiked solution 2': '准确度-150%加标溶液-2',
+    'Accuracy -150% Spiked solution-2': '准确度-150%加标溶液-2',
+    'Accuracy -150% Spiked solution 2': '准确度-150%加标溶液-2',
+    'Accuracy-150% Spiked solution-3': '准确度-150%加标溶液-3',
+    'Accuracy-150% Spiked solution 3': '准确度-150%加标溶液-3',
+    'Accuracy -150% Spiked solution-3': '准确度-150%加标溶液-3',
+    'Accuracy -150% Spiked solution 3': '准确度-150%加标溶液-3',
+
+    // 重复性+准确性
+    'Repeatability+Accuracy-100% Spiked solution-1': '重复性+准确性-100%加标溶液-1',
+    'Repeatability+Accuracy-100% Spiked solution 1': '重复性+准确性-100%加标溶液-1',
+    'Repeatability+Accuracy-100% Spiked solution-2': '重复性+准确性-100%加标溶液-2',
+    'Repeatability+Accuracy-100% Spiked solution 2': '重复性+准确性-100%加标溶液-2',
+    'Repeatability+Accuracy-100% Spiked solution-3': '重复性+准确性-100%加标溶液-3',
+    'Repeatability+Accuracy-100% Spiked solution 3': '重复性+准确性-100%加标溶液-3',
+
+    // 重复性
+    'Repeatability-100% Spiked solution-4': '重复性-100%加标溶液-4',
+    'Repeatability-100% Spiked solution 4': '重复性-100%加标溶液-4',
+    'Repeatability-100% Spiked solution-5': '重复性-100%加标溶液-5',
+    'Repeatability-100% Spiked solution 5': '重复性-100%加标溶液-5',
+    'Repeatability-100% Spiked solution-6': '重复性-100%加标溶液-6',
+    'Repeatability-100% Spiked solution 6': '重复性-100%加标溶液-6',
+
+    // 耐用性（基础版）
+    'Robustness-Blank solution': '耐用性-空白溶液',
+    'Robustness-Test solution': '耐用性-供试品溶液',
+    'Robustness-Spiked solution': '耐用性-加标供试品溶液',
+
+    // 耐用性（带温度/流速条件）
+    'Robustness XX℃-Blank solution': '耐用性XX℃（或流速等条件）-空白溶液',
+    'Robustness XX℃- Blank solution': '耐用性XX℃（或流速等条件）-空白溶液',
+    'Robustness XX℃-Test solution': '耐用性XX℃（或流速等条件）-供试品溶液',
+    'Robustness XX℃- Test solution': '耐用性XX℃（或流速等条件）-供试品溶液',
+    'Robustness XX℃-Reference solution': '耐用性XX℃（或流速等条件）-对照品溶液',
+    'Robustness XX℃- Reference solution': '耐用性XX℃（或流速等条件）-对照品溶液',
+    'Robustness XX℃-Spiked solution': '耐用性XX℃（或流速等条件）-加标溶液',
+    'Robustness XX℃- Spiked solution': '耐用性XX℃（或流速等条件）-加标溶液',
+
+    // 中间精密度-100%加标溶液
+    'Intermediate precision-100% Spiked solution-1': '中间精密度-100%加标供试品溶液-1',
+    'Intermediate precision-100% Spiked solution 1': '中间精密度-100%加标供试品溶液-1',
+    'Intermediate precision-100% Spiked solution-2': '中间精密度-100%加标供试品溶液-2',
+    'Intermediate precision-100% Spiked solution 2': '中间精密度-100%加标供试品溶液-2',
+    'Intermediate precision-100% Spiked solution-3': '中间精密度-100%加标供试品溶液-3',
+    'Intermediate precision-100% Spiked solution 3': '中间精密度-100%加标供试品溶液-3',
+    'Intermediate precision-100% Spiked solution-4': '中间精密度-100%加标供试品溶液-4',
+    'Intermediate precision-100% Spiked solution 4': '中间精密度-100%加标供试品溶液-4',
+    'Intermediate precision-100% Spiked solution-5': '中间精密度-100%加标供试品溶液-5',
+    'Intermediate precision-100% Spiked solution 5': '中间精密度-100%加标供试品溶液-5',
+    'Intermediate precision-100% Spiked solution-6': '中间精密度-100%加标供试品溶液-6',
+    'Intermediate precision-100% Spiked solution 6': '中间精密度-100%加标供试品溶液-6',
+
+    // 中间精密度文本
+    '中间精密度': '中间精密度',
+
+    // 样品检测
+    'Sample Test-LOD': '样品检测-LOD',
+    'Sample Test-Blank solution': '样品检测-空白溶剂',
+    'Sample Test-XX(20260415)': '样品检测-盐酸二甲双胍（XX）',
+    'Sample Test-XX(20260416)': '样品检测-盐酸二甲双胍（XX）',
+    'Sample Test-XX(20260417)': '样品检测-盐酸二甲双胍（XX）',
+    'Sample Test-XX(20260418)': '样品检测-盐酸二甲双胍（XX）',
+    'Sample Test-': '样品检测-'
+};
+
+        // 格式化文件大小
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // 显示错误
+        function showError(message) {
+            errorMessage.textContent = '❌ ' + message;
+            errorMessage.classList.add('show');
+            setTimeout(() => {
+                errorMessage.classList.remove('show');
+            }, 5000);
+        }
+
+        // 更新进度
+        function updateProgress(percent, text) {
+            progressFill.style.width = percent + '%';
+            progressText.textContent = text;
+        }
+
+        // 处理文件选择
+        async function handleFile(file) {
+            if (!file || file.type !== 'application/pdf') {
+                showError('请选择有效的 PDF 文件');
+                return;
+            }
+
+            selectedFile = file;
+            selectedInstrument = instrumentType.value;
+
+            // 显示文件信息
+            fileName.textContent = file.name;
+            fileSize.textContent = '大小: ' + formatFileSize(file.size);
+            fileInfo.classList.add('show');
+
+            // 读取 PDF 获取页数
+            try {
+                updateProgress(10, '正在读取 PDF...');
+                progressContainer.classList.add('show');
+                processBtn.disabled = true;
+
+                const arrayBuffer = await file.arrayBuffer();
+                pdfDoc = await PDFDocument.load(arrayBuffer);
+                const pageCount = pdfDoc.getPageCount();
+
+                updateProgress(30, `检测到 ${pageCount} 页`);
+
+                // 提取每页的文本并生成书签标题
+                updateProgress(35, '正在提取页面内容...');
+                pageBookmarks = [];
+
+                // 复用同一个 pdf.js 文档实例（避免每页重复解析整份 PDF 导致内存爆炸）
+                // 同时配置 cMapUrl 解决中文/CJK 字体 CMap 加载警告
+                // standardFontDataUrl 配置解决标准字体（如 FoxitSerifBold.pfb）加载警告
+                // 使用绝对路径防止相对路径拼接错误（避免 /lib/lib/ 重复路径问题）
+                const pdfJsDoc = await pdfjsLib.getDocument({
+                    data: arrayBuffer,
+                    cMapUrl: '/lib/cmaps/',
+                    cMapPacked: true,
+                    standardFontDataUrl: '/lib/standard_fonts/',
+                    disableFontFace: true,
+                    isEvalSupported: false
+                }).promise;
+
+                try {
+                    for (let i = 1; i <= pageCount; i++) {
+                        const text = await extractPageText(pdfJsDoc, i);
+                        const sampleName = extractSampleName(text, selectedInstrument);
+                        const bookmarkTitle = sampleName || `第 ${i} 页`;
+                        pageBookmarks.push(bookmarkTitle);
+                        updateProgress(35 + Math.round((i / pageCount) * 15), `已提取第 ${i}/${pageCount} 页...`);
+                        // 让出主线程，避免长任务挂起 UI 与 GC
+                        if (i % 10 === 0) await new Promise(r => setTimeout(r, 0));
+                    }
+                } finally {
+                    try { await pdfJsDoc.cleanup(); } catch (e) {}
+                    try { await pdfJsDoc.destroy(); } catch (e) {}
+                }
+
+                // 显示书签预览（可编辑） - 两列布局
+                renderBookmarkList();
+                
+                bookmarkPreview.classList.add('show');
+
+                updateProgress(50, '准备添加书签...');
+
+                processBtn.classList.add('show');
+                resetBtn.classList.add('show');
+                uploadArea.style.display = 'none';
+
+                updateProgress(0, '等待开始...');
+                processBtn.disabled = false;
+
+            } catch (error) {
+                showError('读取 PDF 失败: ' + error.message);
+                progressContainer.classList.remove('show');
+                resetForm();
+            }
+        }
+
+        // 添加书签
+        async function addBookmarks() {
+            if (!pdfDoc) return;
+
+            try {
+                processBtn.disabled = true;
+                processBtn.innerHTML = '<span class="spinner"></span>处理中...';
+
+                const pageCount = pdfDoc.getPageCount();
+
+                // 创建所有 outline 条目
+                const outlineRefs = [];
+                for (let i = 0; i < pageCount; i++) {
+                    const page = pdfDoc.getPage(i);
+                    const pageRef = page.ref;
+
+                    // 创建目标数组
+                    const destArray = pdfDoc.context.obj([
+                        pageRef,
+                        PDFName.of('Fit')
+                    ]);
+
+                    // GC-MS：使用原始书签名称；AB 质谱仪：使用中文翻译（如果有）
+                    const bookmarkTitle = selectedInstrument === 'gcms'
+                        ? pageBookmarks[i] || `第 ${i + 1} 页`
+                        : (findTranslation(pageBookmarks[i]) || pageBookmarks[i] || `第 ${i + 1} 页`);
+                    
+                    // 使用 UTF-16BE 编码的十六进制字符串
+                    const titleHex = stringToUtf16BeHex(bookmarkTitle);
+                    const titleString = PDFHexString.of(titleHex);
+
+                    const outlineDict = pdfDoc.context.obj({
+                        Title: titleString,
+                        Parent: null,
+                        Dest: destArray
+                    });
+
+                    const outlineRef = pdfDoc.context.register(outlineDict);
+                    outlineRefs.push(outlineRef);
+
+                    const percent = 50 + Math.round((i + 1) / pageCount * 20);
+                    updateProgress(percent, `正在创建第 ${i + 1}/${pageCount} 页的书签: ${bookmarkTitle}...`);
+                }
+
+                // 设置 Next 和 Prev 指针
+                for (let i = 0; i < outlineRefs.length; i++) {
+                    const outline = outlineRefs[i];
+                    const dict = pdfDoc.context.lookup(outline);
+
+                    if (i > 0) {
+                        dict.set(PDFName.of('Prev'), outlineRefs[i - 1]);
+                    }
+                    if (i < outlineRefs.length - 1) {
+                        dict.set(PDFName.of('Next'), outlineRefs[i + 1]);
+                    }
+                }
+
+                updateProgress(75, '正在设置文档大纲...');
+
+                // 创建 Outlines 根对象
+                const outlinesDict = pdfDoc.context.obj({
+                    Type: PDFName.of('Outlines'),
+                    First: outlineRefs[0],
+                    Last: outlineRefs[outlineRefs.length - 1],
+                    Count: pageCount
+                });
+
+                const outlinesRef = pdfDoc.context.register(outlinesDict);
+
+                // 设置每个 outline 条目的 Parent
+                for (const outlineRef of outlineRefs) {
+                    const dict = pdfDoc.context.lookup(outlineRef);
+                    dict.set(PDFName.of('Parent'), outlinesRef);
+                }
+
+                // 设置文档的 Outlines 引用
+                pdfDoc.catalog.set(PDFName.of('Outlines'), outlinesRef);
+
+                updateProgress(90, '正在保存文件...');
+
+                // 保存 PDF
+                const pdfBytes = await pdfDoc.save();
+
+                updateProgress(100, '完成!');
+
+                // 下载文件
+                const newFileName = fileName.textContent.replace('.pdf', '_带书签.pdf');
+                download(pdfBytes, newFileName, 'application/pdf');
+
+                successMessage.classList.add('show');
+                processBtn.innerHTML = '添加书签并下载';
+
+                setTimeout(() => {
+                    successMessage.classList.remove('show');
+                }, 5000);
+
+            } catch (error) {
+                showError('添加书签失败: ' + error.message);
+                processBtn.disabled = false;
+                processBtn.innerHTML = '添加书签并下载';
+            }
+        }
+
+        // 规范化名称（去除所有空格、零宽字符、统一连接符）
+        function normalizeName(name) {
+            return name.replace(/[\s\u200c\u200b\-]/g, '').toLowerCase();
+        }
+
+        // 模式匹配规则（处理数字后缀变化）
+        const patternRules = [
+            { pattern: /(\w+[+-].*?)(\d+)$/, desc: '后缀数字变化' }, // 如 SST-1、LOQ-3 等
+        ];
+
+        // 查找中文翻译
+        function findTranslation(originalName) {
+            // 1. 精确匹配
+            if (translationMap[originalName]) {
+                return translationMap[originalName];
+            }
+            
+            // 2. 规范化后匹配（忽略空格、大小写）
+            const normalized = normalizeName(originalName);
+            for (const key in translationMap) {
+                if (normalizeName(key) === normalized) {
+                    return translationMap[key];
+                }
+            }
+            
+            // 3. 模式匹配（处理数字后缀变化，如 -1、-2、-3...）
+            // 按键长从长到短排序，优先匹配更长的键
+            const sortedKeys = Object.keys(translationMap).sort((a, b) => b.length - a.length);
+            for (const key of sortedKeys) {
+                // 提取模板（去掉末尾数字）
+                const keyPrefix = key.replace(/[\s\-]*(\d+)$/, '');
+                const namePrefix = originalName.replace(/[\s\-]*(\d+)$/, '');
+                
+                // 前缀匹配（忽略空格、减号差异）
+                if (normalizeName(keyPrefix) === normalizeName(namePrefix)) {
+                    // 提取原始名称中的数字
+                    const numMatch = originalName.match(/(\d+)$/);
+                    if (numMatch) {
+                        const num = numMatch[1];
+                        // 替换中文模板中的数字
+                        const chineseTemplate = translationMap[key];
+                        const chineseResult = chineseTemplate.replace(/\d+$/, num);
+                        return chineseResult;
+                    }
+                    return translationMap[key];
+                }
+            }
+            
+            // 4. 前缀匹配（处理动态内容，如 Sample Test-xxx、Robustness xxx）
+            // Sample Test-xxx → 样品检测-xxx
+            if (originalName.startsWith('Sample Test-')) {
+                const dynamicContent = originalName.substring('Sample Test-'.length);
+                return '样品检测-' + dynamicContent;
+            }
+            
+            // Robustness xxx-Blank solution → 耐用性xxx-空白溶液
+            const robustnessMatch = originalName.match(/^Robustness\s+(.+?)-(Blank solution|Test solution|Reference solution|Spiked solution)$/i);
+            if (robustnessMatch) {
+                const condition = robustnessMatch[1]; // 动态条件（温度、流速等）
+                const type = robustnessMatch[2].toLowerCase();
+                const typeMap = {
+                    'blank solution': '空白溶液',
+                    'test solution': '供试品溶液',
+                    'reference solution': '对照品溶液',
+                    'spiked solution': '加标溶液'
+                };
+                return '耐用性' + condition + '-' + typeMap[type];
+            }
+            
+            // 5. 包含匹配（处理部分匹配）- 优先匹配更长的键
+            let longestMatch = null;
+            let longestKeyLength = 0;
+            for (const key in translationMap) {
+                const keyNormalized = normalizeName(key);
+                if (normalized.includes(keyNormalized)) {
+                    // 只有当整个名称不包含更长的前缀时才匹配
+                    // 例如：Intermediate precision-Linear-C1 不应该只匹配 Linear-C1
+                    if (key.length > longestKeyLength) {
+                        // 额外检查：如果键是较短的前缀，不应该覆盖更长的匹配
+                        // 比如 Linear-C1 是 8 字符，而 Intermediate precision... 更长
+                        longestMatch = key;
+                        longestKeyLength = key.length;
+                    }
+                }
+            }
+            if (longestMatch && longestKeyLength > 0) {
+                return translationMap[longestMatch];
+            }
+            
+            return '';
+        }
+
+        // 渲染书签列表
+        function renderBookmarkList() {
+            // GC-MS 不做中英文对照，只显示原始名称一列
+            if (selectedInstrument === 'gcms') {
+                let bookmarksHtml = `
+                    <div class="bookmark-header">
+                        <span>页码</span>
+                        <span>书签名称</span>
+                    </div>
+                `;
+                for (let i = 0; i < pageBookmarks.length; i++) {
+                    const bookmarkName = pageBookmarks[i];
+                    bookmarksHtml += `
+                        <div class="bookmark-item">
+                            <span class="bookmark-page-num">P${i + 1}</span>
+                            <input type="text" class="bookmark-input" data-index="${i}" value="${bookmarkName.replace(/"/g, '&quot;')}">
+                        </div>
+                    `;
+                }
+                bookmarkList.innerHTML = bookmarksHtml;
+                
+                // 绑定输入框变化事件
+                bookmarkList.querySelectorAll('.bookmark-input').forEach(input => {
+                    input.addEventListener('change', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        pageBookmarks[index] = e.target.value.trim() || `第 ${index + 1} 页`;
+                    });
+                });
+            } else {
+                // AB 质谱仪：中英文两列对照
+                let bookmarksHtml = `
+                    <div class="bookmark-header">
+                        <span>页码</span>
+                        <span>原始书签（英文）</span>
+                        <span>中文书签</span>
+                    </div>
+                `;
+                for (let i = 0; i < pageBookmarks.length; i++) {
+                    const originalName = pageBookmarks[i];
+                    const chineseName = findTranslation(originalName);
+                    bookmarksHtml += `
+                        <div class="bookmark-item">
+                            <span class="bookmark-page-num">P${i + 1}</span>
+                            <input type="text" class="bookmark-input" data-index="${i}" data-type="original" value="${originalName.replace(/"/g, '&quot;')}" readonly>
+                            <input type="text" class="bookmark-input" data-index="${i}" data-type="chinese" value="${chineseName.replace(/"/g, '&quot;')}" placeholder="输入中文名称...">
+                        </div>
+                    `;
+                }
+                bookmarkList.innerHTML = bookmarksHtml;
+                
+                // 绑定中文输入框变化事件
+                bookmarkList.querySelectorAll('.bookmark-input[data-type="chinese"]').forEach(input => {
+                    input.addEventListener('change', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        const originalName = pageBookmarks[index];
+                        const chineseValue = e.target.value.trim();
+                        if (chineseValue) {
+                            translationMap[originalName] = chineseValue;
+                        } else {
+                            delete translationMap[originalName];
+                        }
+                    });
+                });
+            }
+        }
+
+        // 重置表单
+        function resetForm() {
+            selectedFile = null;
+            pdfDoc = null;
+            pageBookmarks = [];
+            fileInput.value = '';
+
+            fileInfo.classList.remove('show');
+            bookmarkPreview.classList.remove('show');
+            progressContainer.classList.remove('show');
+            processBtn.classList.remove('show');
+            resetBtn.classList.remove('show');
+            successMessage.classList.remove('show');
+            errorMessage.classList.remove('show');
+
+            uploadArea.style.display = 'block';
+            processBtn.disabled = false;
+            processBtn.innerHTML = '添加书签并下载';
+            updateProgress(0, '准备中...');
+        }
+
+        // 事件监听
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        processBtn.addEventListener('click', addBookmarks);
+        resetBtn.addEventListener('click', resetForm);
+    </script>
+</body>
+</html>

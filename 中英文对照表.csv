@@ -1,0 +1,78 @@
+SST-1,系统适用性溶液-1
+SST-2,系统适用性溶液-2
+SST-3,系统适用性溶液-3
+SST-4,系统适用性溶液-4
+SST-5,系统适用性溶液-5
+SST-6,系统适用性溶液-6
+Specificity-Blank solution,专属性-空白溶剂
+Specificity-Test Solution,专属性-供试品溶液
+Specificity-Reference solution,专属性-对照品溶液
+Specificity- Spiked solution,专属性-加标溶液
+Blank-1,空白溶剂-1
+LOD-1,LOD-1
+LOD-2,LOD-2
+LOD-3,LOD-3
+LOQ-1,LOQ-1
+LOQ-2,LOQ-2
+LOQ-3,LOQ-3
+LOQ-4,LOQ-4
+LOQ-5,LOQ-5
+LOQ-6,LOQ-6
+Stability-Reference solution 1,稳定性-对照品溶液 1
+Stability- Spiked solution 1,稳定性-加标溶液 1
+Linear- C1,线性与范围溶液-C1
+Linear -C2,线性与范围溶液-C2
+Linear -C3,线性与范围溶液-C3
+Linear -C4,线性与范围溶液-C4
+Linear -C5,线性与范围溶液-C5
+Accuracy -Test Solution 1,准确度-供试品溶液-1
+Accuracy -Test Solution 2,准确度-供试品溶液-2
+Accuracy -Test Solution 3,准确度-供试品溶液-3
+Accuracy -LOQ Spiked 1,准确度-LOQ加标溶液-1
+Accuracy -LOQ Spiked 2,准确度-LOQ加标溶液-2
+Accuracy -LOQ Spiked 3,准确度-LOQ加标溶液-3
+Stability-Reference solution 2,稳定性-对照品溶液 2
+Stability- Spiked solution 2,稳定性-加标溶液 2
+Repeatability+Accuracy-100% Spiked 1,重复性+准确性-100%加标溶液-1
+Repeatability+Accuracy-100% Spiked 2,重复性+准确性-100%加标溶液-2
+Repeatability+Accuracy-100% Spiked 3,重复性+准确性-100%加标溶液-3
+Repeatability-100% Spiked 4,重复性-100%加标溶液-4
+Repeatability-100% Spiked 5,重复性-100%加标溶液-5
+Repeatability-100% Spiked 6,重复性-100%加标溶液-6
+Accuracy -150% Spiked 1,准确度-150%加标溶液-1
+Accuracy -150% Spiked 2,准确度-150%加标溶液-2
+Accuracy -150% Spiked 3,准确度-150%加标溶液-3
+Robustness XX℃-Blank solution,耐用性XX℃（或流速等条件）-空白溶液
+Robustness XX℃-Test solution,耐用性XX℃（或流速等条件）-供试品溶液
+Robustness XX℃-Reference solution,耐用性XX℃（或流速等条件）-对照品溶液
+Robustness XX℃-Spiked solution,耐用性XX℃（或流速等条件）-加标溶液
+Stability-Reference solution 3,稳定性-对照品溶液 3
+Stability- Spiked solution 3,稳定性-加标溶液 3
+Robustness XX℃-Blank solution,耐用性XX℃（或流速等条件）-空白溶液
+Robustness XX℃-Test solution,耐用性XX℃（或流速等条件）-供试品溶液
+Robustness XX℃-Reference solution,耐用性XX℃（或流速等条件）-对照品溶液
+Robustness XX℃- Spiked solution,耐用性XX℃（或流速等条件）-加标溶液
+Stability-Reference solution 4,稳定性-对照品溶液 4
+Stability- Spiked solution 4,稳定性-加标溶液 4
+中间精密度,中间精密度
+Intermediate precision-Linear C1,中间精密度-线性溶液C1
+Intermediate precision-Linear C2,中间精密度-线性溶液C2
+Intermediate precision-Linear C3,中间精密度-线性溶液C3
+Intermediate precision-Linear C4,中间精密度-线性溶液C4
+Intermediate precision-Linear C5,中间精密度-线性溶液C5
+Robustness-Blank solution,耐用性-空白溶剂
+Robustness-Test solution,耐用性--供试品溶液
+Robustness-Spiked solution,耐用性-加标供试品溶液
+Intermediate precision-100% Spiked 1,中间精密度-100%加标溶液-1
+Intermediate precision-100% Spiked 2,中间精密度-100%加标溶液-2
+Intermediate precision-100% Spiked 3,中间精密度-100%加标溶液-3
+Intermediate precision-100% Spiked 4,中间精密度-100%加标溶液-4
+Intermediate precision-100% Spiked 5,中间精密度-100%加标溶液-5
+Intermediate precision-100% Spiked 6,中间精密度-100%加标溶液-6
+Blank-3,空白溶剂-3
+Sample Test-LOD,样品检测-LOD
+Sample Test-Blank solution,样品检测-空白溶剂
+Sample Test-XX(20260415),样品检测-盐酸二甲双胍（XX）
+Sample Test-XX(20260416),样品检测-盐酸二甲双胍（XX）
+Sample Test-XX(20260417),样品检测-盐酸二甲双胍（XX）
+Sample Test-XX(20260418),样品检测-盐酸二甲双胍（XX）
